@@ -1,1 +1,2 @@
 This is a message in my repository
+Now it has been edited by another branch
