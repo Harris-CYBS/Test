@@ -1,0 +1,915 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "actions": {
+            "Add_Protocols_to_Vector_Array": {
+                "actions": {
+                    "Append_to_Vector_array": {
+                        "inputs": {
+                            "name": "Vector",
+                            "value": "@items('Add_Protocols_to_Vector_Array')['Protocol']"
+                        },
+                        "runAfter": {},
+                        "type": "AppendToArrayVariable"
+                    }
+                },
+                "foreach": "@body('Parse_Vector')",
+                "runAfter": {
+                    "Parse_Vector": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Foreach"
+            },
+            "CSV_Name": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "CSV Name",
+                            "type": "string",
+                            "value": "DLP Policy Violation - @{variables('User ID')} - @{utcNow()}.csv"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Add_Protocols_to_Vector_Array": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Collect_all_events_for_Email_Attachment": {
+                "inputs": {
+                    "body": "let excludeList = datatable (policy: string)\n[\n    // \"\",\n    \"Sensitive Keywords & Phrases - Auditing\",\n    \"Endpoint DLP Policy - Restrictions\",\n    \"Domain Exclusion - Auditing\",\n    \"Endpoint DLP Policy - PII - Restriction\"\n];\nlet DLPData = materialize (O365_CL\n| where RecordType_d != 40\n| where UserId_s == \"@{variables('User ID')}\"\n| where Operation_s != \"SensitivityLabelApplied\"\n| where Operation_s != \"MipLabel\"\n| where SensitivityLabelEventData_LabelEventType_d !in (1, 4, 0) //label upgraded, label changed same order, none\n| where Id_g in (dynamic(@{variables('Event IDs')}))\n| extend Policy = iff(Operation_s !in (\"SensitivityLabelUpdated\", \"SensitivityLabelRemoved\"), tostring(parse_json(PolicyDetails_s)[0].PolicyName), Operation_s)\n| where Policy !in (excludeList)\n);\nDLPData\n| where Policy != \"\"\n| extend Rule = iff(isempty(SensitivityLabelEventData_LabelEventType_d), tostring(parse_json(tostring(parse_json(PolicyDetails_s)[0].Rules))[0].RuleName), iff(SensitivityLabelEventData_LabelEventType_d == 2, \"Label Downgraded\", iff(SensitivityLabelEventData_LabelEventType_d == 3, \"Label Removed\", \"No Rule Match\")))\n| extend Location = tostring(parse_json(tostring(parse_json(tostring(parse_json(tostring(parse_json(PolicyDetails_s)[0].Rules))[0].ConditionsMatched)).SensitiveInformation))[0].Location)\n| union (DLPData\n    | where Policy == \"\"\n    | parse PolicyDetails_s with * 'PolicyName\\\": \\\"'Policy'\\\",'*\n    | parse PolicyDetails_s with * 'Location\\\": \\\"'Location'\\\",'*\n    | where Policy !in (excludeList)\n    )\n| extend SubjectDoc = iff(isempty(SharePointMetaData_FileName_s), iff(isempty(ExchangeMetaData_Subject_s), iff(isempty(EndpointMetaData_TargetFilePath_s), EndpointMetaData_TargetFilePath_s, ObjectId_g), ExchangeMetaData_Subject_s), SharePointMetaData_FileName_s)\n| extend Protocol = iff(isempty(EndpointMetaData_EndpointOperation_s), iff(Workload_s !in (\"Exchange\",\"SharePoint\", \"OneDrive\"), Operation_s, Workload_s), EndpointMetaData_EndpointOperation_s)\n| where Protocol !in (\"FileCopiedToClipboard\", \"FileCopiedToNetworkShare\", \"FileAccessedByUnallowedApp\")\n| extend Source = iff(isempty(Location), iff(isempty(ExchangeMetaData_From_s), iff(isempty(SharePointMetaData_FilePathUrl_s), ObjectId_s, SharePointMetaData_FilePathUrl_s), ExchangeMetaData_From_s), Location)\n| extend Destination = iff(isempty(ExchangeMetaData_To_s), iff(isempty(SharePointMetaData_FilePathUrl_s), iff(Protocol == \"FileUploadedToCloud\", EndpointMetaData_TargetDomain_s, iff(Protocol == \"FileCopiedToRemovableMedia\", strcat(\"-Manufacturer: \", EndpointMetaData_RemovableMediaDeviceAttributes_Manufacturer_s, \" -Model: \", EndpointMetaData_RemovableMediaDeviceAttributes_Model_s, \" -SerialNumber: \",EndpointMetaData_RemovableMediaDeviceAttributes_SerialNumber_s, \" -Path: \", EndpointMetaData_TargetFilePath_s), iff(Protocol == \"FilePrinted\", EndpointMetaData_TargetPrinterName_s, EndpointMetaData_TargetFilePath_s))), SharePointMetaData_FilePathUrl_s), ExchangeMetaData_To_s)\n| extend DeviceName = iff(isempty(EndpointMetaData_DeviceName_s), DeviceName_s, EndpointMetaData_DeviceName_s)\n| extend Department = \"@{body('Parse_User_Response')?['department']}\"\n| extend FirstName = \"@{body('Parse_User_Response')?['givenName']}\"\n| extend LastName = \"@{body('Parse_User_Response')?['surname']}\"\n| extend Location = \"@{body('Parse_User_Response')?['officeLocation']}\"\n| extend Title = \"@{body('Parse_User_Response')?['jobTitle']}\"\n| extend Company = \"@{body('Parse_User_Response')?['companyName']}\"\n| project\n    Protocol,\n    CreationTime = CreationTime_t,\n    Policy,\n    Rule,\n    Destination,\n    Source,\n    SubjectDoc,\n    DeviceName,\n    UserId = UserId_s,\n    Department,\n    FirstName,\n    LastName,\n    Location,\n    Title,\n    Company",
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuremonitorlogs_1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                        "resourcegroups": "{Resource Group}",
+                        "resourcename": "{Resource Name}",
+                        "resourcetype": "Log Analytics Workspace",
+                        "subscriptions": "{Subscription}",
+                        "timerange": "Set in query"
+                    }
+                },
+                "runAfter": {
+                    "Initialize_Vectors_Array": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Collect_all_events_for_Splunk": {
+                "inputs": {
+                    "body": "let excludeList = datatable (policy: string)\n[\n    // \"\",\n    \"Sensitive Keywords & Phrases - Auditing\",\n    \"Endpoint DLP Policy - Restrictions\",\n    \"Domain Exclusion - Auditing\",\n    \"Endpoint DLP Policy - PII - Restriction\"\n];\nlet DLPData = materialize (O365_CL\n| where RecordType_d != 40\n| where UserId_s == \"@{variables('User ID')}\"\n| where Operation_s != \"SensitivityLabelApplied\"\n| where Operation_s != \"MipLabel\"\n| where SensitivityLabelEventData_LabelEventType_d !in (1, 4, 0) //label upgraded, label changed same order, none\n| where Id_g in (dynamic(@{variables('Event IDs')}))\n| extend Policy = iff(Operation_s !in (\"SensitivityLabelUpdated\", \"SensitivityLabelRemoved\"), tostring(parse_json(PolicyDetails_s)[0].PolicyName), Operation_s)\n| where Policy !in (excludeList)\n);\nDLPData\n| where Policy != \"\"\n| extend Rule = iff(isempty(SensitivityLabelEventData_LabelEventType_d), tostring(parse_json(tostring(parse_json(PolicyDetails_s)[0].Rules))[0].RuleName), iff(SensitivityLabelEventData_LabelEventType_d == 2, \"Label Downgraded\", iff(SensitivityLabelEventData_LabelEventType_d == 3, \"Label Removed\", \"No Rule Match\")))\n| extend Location = tostring(parse_json(tostring(parse_json(tostring(parse_json(tostring(parse_json(PolicyDetails_s)[0].Rules))[0].ConditionsMatched)).SensitiveInformation))[0].Location)\n| extend MatchCount = tostring(parse_json(tostring(parse_json(tostring(parse_json(tostring(parse_json(PolicyDetails_s)[0].Rules))[0].ConditionsMatched)).SensitiveInformation))[0].Count)\n| union (DLPData\n    | where Policy == \"\"\n    | parse PolicyDetails_s with * 'PolicyName\\\": \\\"'Policy'\\\",'*'Count\\\": 'MatchCount','*\n    | parse PolicyDetails_s with * 'Location\\\": \\\"'Location'\\\",'*\n    | where Policy !in (excludeList)\n    )\n| extend SubjectDoc = iff(isempty(SharePointMetaData_FileName_s), iff(isempty(ExchangeMetaData_Subject_s), iff(isempty(EndpointMetaData_TargetFilePath_s), EndpointMetaData_TargetFilePath_s, ObjectId_g), ExchangeMetaData_Subject_s), SharePointMetaData_FileName_s)\n| extend Protocol = iff(isempty(EndpointMetaData_EndpointOperation_s), iff(Workload_s !in (\"Exchange\",\"SharePoint\", \"OneDrive\"), Operation_s, Workload_s), EndpointMetaData_EndpointOperation_s)\n| where Protocol !in (\"FileCopiedToClipboard\", \"FileCopiedToNetworkShare\", \"FileAccessedByUnallowedApp\")\n| extend Source = iff(isempty(Location), iff(isempty(ExchangeMetaData_From_s), iff(isempty(SharePointMetaData_FilePathUrl_s), ObjectId_s, SharePointMetaData_FilePathUrl_s), ExchangeMetaData_From_s), Location)\n| extend Destination = iff(isempty(ExchangeMetaData_To_s), iff(isempty(SharePointMetaData_FilePathUrl_s), iff(Protocol == \"FileUploadedToCloud\", EndpointMetaData_TargetDomain_s, iff(Protocol == \"FileCopiedToRemovableMedia\", strcat(\"-Manufacturer: \", EndpointMetaData_RemovableMediaDeviceAttributes_Manufacturer_s, \" -Model: \", EndpointMetaData_RemovableMediaDeviceAttributes_Model_s, \" -SerialNumber: \",EndpointMetaData_RemovableMediaDeviceAttributes_SerialNumber_s, \" -Path: \", EndpointMetaData_TargetFilePath_s), iff(Protocol == \"FilePrinted\", EndpointMetaData_TargetPrinterName_s, EndpointMetaData_TargetFilePath_s))), SharePointMetaData_FilePathUrl_s), ExchangeMetaData_To_s)\n| extend DeviceName = iff(isempty(EndpointMetaData_DeviceName_s), DeviceName_s, EndpointMetaData_DeviceName_s)\n| extend OldSensitivityLabel =\n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"162b2348-a379-47d7-bf25-1402d7b08038\", \"Business\",\n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"2f0e7663-875a-4f50-a037-bc510eb3548e\", \"Sensitive\",\n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"469fd7f3-75a8-413a-8909-54e46085d264\", \"Confidential\", \n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"962845b5-9b70-49d7-b944-decf2d49c436\", \"Public\", \n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"5c645e4c-ff24-416f-b8d2-b7102f1f1bdb\", \"Personal\", \n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"f561c1f0-e451-4e96-b961-30d6bf0a4a46\", \"Internal\", \n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"ea031ee4-0993-4124-bf4b-4ed20d8cbc2a\", \"Encrypt - External User\", \n    iff(SensitivityLabelEventData_OldSensitivityLabelId_g == \"e85a264f-0295-4248-90f9-504504c6e223\", \"Secret \\\\ My Group\", \"\"))))))))\n| extend NewSensitivityLabel =\n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"162b2348-a379-47d7-bf25-1402d7b08038\", \"Business\",\n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"2f0e7663-875a-4f50-a037-bc510eb3548e\", \"Sensitive\",\n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"469fd7f3-75a8-413a-8909-54e46085d264\", \"Confidential\", \n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"962845b5-9b70-49d7-b944-decf2d49c436\", \"Public\", \n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"5c645e4c-ff24-416f-b8d2-b7102f1f1bdb\", \"Personal\", \n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"f561c1f0-e451-4e96-b961-30d6bf0a4a46\", \"Internal\", \n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"ea031ee4-0993-4124-bf4b-4ed20d8cbc2a\", \"Encrypt - External User\", \n    iff(SensitivityLabelEventData_SensitivityLabelId_g == \"e85a264f-0295-4248-90f9-504504c6e223\", \"Secret \\\\ My Group\", \"\"))))))))\n| extend IncidentId = dynamic(@{variables('Incident Titles')})\n| extend EscalationStatus = \"Escalated L2Triage\"\n| project\n    AlertId = Id_g,\n    Policy,\n    Rule,\n    Protocol,\n    MatchCount,\n    Destination,\n    Source,\n    SubjectDoc,\n    DeviceName,\n    UserId = UserId_s,\n    CreationTime = CreationTime_t,\n    OldSensitivityLabel,\n    NewSensitivityLabel,\n    Justification = SensitivityLabelEventData_JustificationText_s,\n    IncidentId,\n    EscalationStatus",
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuremonitorlogs_1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                        "resourcegroups": "{Resource Group}",
+                        "resourcename": "{Resource Name}",
+                        "resourcetype": "Log Analytics Workspace",
+                        "subscriptions": "{Subscription}",
+                        "timerange": "Set in query"
+                    }
+                },
+                "runAfter": {
+                    "Initialize_Vectors_Array": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Collect_the_Vector_for_Email": {
+                "inputs": {
+                    "body": "O365_CL\n| where RecordType_d != 40\n| where UserId_s == \"@{variables('User ID')}\"\n| where Id_g in (dynamic(@{variables('Event IDs')}))\n| extend Protocol = iff(isempty(EndpointMetaData_EndpointOperation_s), iff(Workload_s !in (\"Exchange\",\"SharePoint\", \"OneDrive\"), Operation_s, Workload_s), EndpointMetaData_EndpointOperation_s)\n| where Protocol !in (\"FileCopiedToClipboard\", \"FileCopiedToNetworkShare\", \"FileAccessedByUnallowedApp\")\n| summarize by Protocol",
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuremonitorlogs_1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                        "resourcegroups": "{Resource Group}",
+                        "resourcename": "{Resource Name}",
+                        "resourcetype": "Log Analytics Workspace",
+                        "subscriptions": "{Subscription}",
+                        "timerange": "Set in query"
+                    }
+                },
+                "runAfter": {
+                    "Collect_all_events_for_Email_Attachment": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Create_CSV_Table_for_Email": {
+                "inputs": {
+                    "format": "CSV",
+                    "from": "@body('Collect_all_events_for_Email_Attachment')?['value']"
+                },
+                "runAfter": {
+                    "CSV_Name": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Table"
+            },
+            "Create_blob_(V2)": {
+                "inputs": {
+                    "body": "@variables('Base64 Attachment')",
+                    "headers": {
+                        "ReadFileMetadataFromServer": true
+                    },
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azureblob']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent('{Blob Name}'))}/files",
+                    "queries": {
+                        "folderPath": "/attachments",
+                        "name": "@variables('CSV Name')",
+                        "queryParametersSingleEncoded": true
+                    }
+                },
+                "runAfter": {
+                    "Initialize_Base64_Attachment": [
+                        "Succeeded"
+                    ]
+                },
+                "runtimeConfiguration": {
+                    "contentTransfer": {
+                        "transferMode": "Chunked"
+                    }
+                },
+                "type": "ApiConnection"
+            },
+            "Get_Enhanced_Monitor_User": {
+                "inputs": {
+                    "body": "EnhancedMonitoring_DLPPilot_Lookup\n| union EnhancedMonitoring_DLPInvol_Lookup\n| union EnhancedMonitoring_DLPVol_Lookup\n| where userPrincipalName_s contains \"@{variables('User ID')}\"",
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azuremonitorlogs_1']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                        "resourcegroups": "{Resource Group}",
+                        "resourcename": "{Resource Name}",
+                        "resourcetype": "Log Analytics Workspace",
+                        "subscriptions": "{Subscription}",
+                        "timerange": "Set in query"
+                    }
+                },
+                "runAfter": {
+                    "HTTP_to_Escalated_Reminder_Tracking_Playbook": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Get_Mail_Send_and_Read_for_Email": {
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['keyvault']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/secrets/@{encodeURIComponent('{Mail Send permissions}')}/value"
+                },
+                "runAfter": {},
+                "type": "ApiConnection"
+            },
+            "HTTP_Get_Manager": {
+                "inputs": {
+                    "authentication": {
+                        "audience": "https://graph.microsoft.com",
+                        "type": "ManagedServiceIdentity"
+                    },
+                    "headers": {
+                        "Authorization": "Bearer"
+                    },
+                    "method": "GET",
+                    "uri": "https://graph.microsoft.com/v1.0/users/@{variables('User ID')}/manager?$select=givenName,surname,mail,businessPhones,jobTitle,officeLocation,department,employeeId"
+                },
+                "runAfter": {
+                    "Parse_User_Response": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http"
+            },
+            "HTTP_Get_User": {
+                "inputs": {
+                    "authentication": {
+                        "audience": "https://graph.microsoft.com",
+                        "type": "ManagedServiceIdentity"
+                    },
+                    "headers": {
+                        "Authorization": "Bearer"
+                    },
+                    "method": "GET",
+                    "uri": "https://graph.microsoft.com/v1.0/users/@{variables('User ID')}?$select=givenName,surname,mail,businessPhones,jobTitle,officeLocation,department,employeeId,companyName,userPrincipalName,id"
+                },
+                "runAfter": {
+                    "Initialize_Analyst_Assignment": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http"
+            },
+            "HTTP_to_Escalated_Reminder_Tracking_Playbook": {
+                "inputs": {
+                    "method": "GET",
+                    "uri": "https://prod-61.{Location}.logic.azure.com:443/workflows/d1930ec8fdca4f1187bf2e82e2161d67/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=za-9SM_zLxxNPfyHsOTyeECr96xr5z1vIqR76SFTa-k&Playbook=1"
+                },
+                "runAfter": {
+                    "Create_blob_(V2)": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Http"
+            },
+            "If_User_in_Enhanced_Monitoring": {
+                "actions": {
+                    "Send_to_ONLY_Manager": {
+                        "inputs": {
+                            "authentication": {
+                                "audience": "https://graph.microsoft.com",
+                                "clientId": "{Email Client ID}",
+                                "secret": "@body('Get_Mail_Send_and_Read_for_Email')?['value']",
+                                "tenant": "{Tenant ID}",
+                                "type": "ActiveDirectoryOAuth"
+                            },
+                            "body": {
+                                "message": {
+                                    "attachments": [
+                                        {
+                                            "@@odata.type": "#microsoft.graph.fileAttachment",
+                                            "contentBytes": "@{variables('Base64 Attachment')}",
+                                            "contentType": "text/csv",
+                                            "name": "@{variables('CSV Name')}"
+                                        }
+                                    ],
+                                    "bccRecipients": [
+                                        {
+                                            "emailAddress": {
+                                                "address": "{Mailbox}"
+                                            }
+                                        }
+                                    ],
+                                    "body": {
+                                        "content": "{Email Body}",
+                                        "contentType": "HTML"
+                                    },
+                                    "importance": "High",
+                                    "subject": "Action Required: Data Security Event",
+                                    "toRecipients": [
+                                        {
+                                            "emailAddress": {
+                                                "address": "@{variables('Manager Email')}"
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            "headers": {
+                                "Authorization": "Bearer"
+                            },
+                            "method": "POST",
+                            "uri": "https://graph.microsoft.com/v1.0/users/{Mailbox}/sendMail"
+                        },
+                        "runAfter": {},
+                        "type": "Http"
+                    },
+                    "Walking_through_Incidents_-_EM": {
+                        "actions": {
+                            "Add_comment_to_incident_(V3)_2": {
+                                "inputs": {
+                                    "body": {
+                                        "incidentArmId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.OperationalInsights/workspaces/{Resource Name}/providers/Microsoft.SecurityInsights/Incidents/@{items('Walking_through_Incidents_-_EM')}",
+                                        "message": "<p>CSV Name: \"@{variables('CSV Name')}\"<br>\nVectors: \"@{variables('Vector')}\"<br>\nEscalation Email Response Required By: \"@{body('HTTP_to_Escalated_Reminder_Tracking_Playbook')}\"<br>\nUPN: @{variables('User ID')}<br>\nManager Escalation Email Address: @{variables('Manager Email')}</p>"
+                                    },
+                                    "host": {
+                                        "connection": {
+                                            "name": "@parameters('$connections')['azuresentinel_1']['connectionId']"
+                                        }
+                                    },
+                                    "method": "post",
+                                    "path": "/Incidents/Comment"
+                                },
+                                "runAfter": {
+                                    "Update_incident_with_EM_Tag": [
+                                        "Succeeded"
+                                    ]
+                                },
+                                "type": "ApiConnection"
+                            },
+                            "Update_incident_with_EM_Tag": {
+                                "inputs": {
+                                    "body": {
+                                        "incidentArmId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.OperationalInsights/workspaces/{Resource Name}/providers/Microsoft.SecurityInsights/Incidents/@{items('Walking_through_Incidents_-_EM')}",
+                                        "owner": "@variables('Analyst Assignment')",
+                                        "ownerAction": "Assign",
+                                        "status": "Active",
+                                        "tagsToAdd": {
+                                            "TagsToAdd": [
+                                                {
+                                                    "Tag": "Enhanced Monitoring"
+                                                },
+                                                {
+                                                    "Tag": "L2 Escalated"
+                                                }
+                                            ]
+                                        },
+                                        "tagsToRemove": {
+                                            "TagsToRemove": [
+                                                {
+                                                    "Tag": "Auto Closed"
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "host": {
+                                        "connection": {
+                                            "name": "@parameters('$connections')['azuresentinel_1']['connectionId']"
+                                        }
+                                    },
+                                    "method": "put",
+                                    "path": "/Incidents"
+                                },
+                                "runAfter": {},
+                                "type": "ApiConnection"
+                            }
+                        },
+                        "foreach": "@variables('Incident Titles')",
+                        "runAfter": {
+                            "Send_to_ONLY_Manager": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Foreach"
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "Send_to_User_AND_Manager": {
+                            "inputs": {
+                                "authentication": {
+                                    "audience": "https://graph.microsoft.com",
+                                    "clientId": "{Email Client ID}",
+                                    "secret": "@body('Get_Mail_Send_and_Read_for_Email')?['value']",
+                                    "tenant": "{Tenant ID}",
+                                    "type": "ActiveDirectoryOAuth"
+                                },
+                                "body": {
+                                    "message": {
+                                        "attachments": [
+                                            {
+                                                "@@odata.type": "#microsoft.graph.fileAttachment",
+                                                "contentBytes": "@{variables('Base64 Attachment')}",
+                                                "contentType": "text/csv",
+                                                "name": "@{variables('CSV Name')}"
+                                            }
+                                        ],
+                                        "bccRecipients": [
+                                            {
+                                                "emailAddress": {
+                                                    "address": "{Mailbox}"
+                                                }
+                                            }
+                                        ],
+                                        "body": {
+                                            "content": "{Email Body}",
+                                            "contentType": "HTML"
+                                        },
+                                        "importance": "High",
+                                        "subject": "Action Required: Data Security Event",
+                                        "toRecipients": [
+                                            {
+                                                "emailAddress": {
+                                                    "address": "@{variables('User ID')}"
+                                                }
+                                            },
+                                            {
+                                                "emailAddress": {
+                                                    "address": "@{variables('Manager Email')}"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                },
+                                "headers": {
+                                    "Authorization": "Bearer"
+                                },
+                                "method": "POST",
+                                "uri": "https://graph.microsoft.com/v1.0/users/{Mailbox}/sendMail"
+                            },
+                            "runAfter": {},
+                            "type": "Http"
+                        },
+                        "Walking_through_Incidents_-_RU": {
+                            "actions": {
+                                "Add_comment_to_incident_(V3)": {
+                                    "inputs": {
+                                        "body": {
+                                            "incidentArmId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.OperationalInsights/workspaces/{Resource Name}/providers/Microsoft.SecurityInsights/Incidents/@{items('Walking_through_Incidents_-_RU')}",
+                                            "message": "<p>CSV Name: \"@{variables('CSV Name')}\"<br>\nVectors: \"@{variables('Vector')}\"<br>\nEscalation Email Response Required By: \"@{body('HTTP_to_Escalated_Reminder_Tracking_Playbook')}\"<br>\nUPN: @{variables('User ID')}<br>\nManager Escalation Email Address: @{variables('Manager Email')}</p>"
+                                        },
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['azuresentinel_1']['connectionId']"
+                                            }
+                                        },
+                                        "method": "post",
+                                        "path": "/Incidents/Comment"
+                                    },
+                                    "runAfter": {
+                                        "Update_incident_with_RU_Tag": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "type": "ApiConnection"
+                                },
+                                "Update_incident_with_RU_Tag": {
+                                    "inputs": {
+                                        "body": {
+                                            "incidentArmId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.OperationalInsights/workspaces/{Resource Name}/providers/Microsoft.SecurityInsights/Incidents/@{items('Walking_through_Incidents_-_RU')}",
+                                            "owner": "@variables('Analyst Assignment')",
+                                            "ownerAction": "Assign",
+                                            "status": "Active",
+                                            "tagsToAdd": {
+                                                "TagsToAdd": [
+                                                    {
+                                                        "Tag": "Regular User"
+                                                    },
+                                                    {
+                                                        "Tag": "L2 Escalated"
+                                                    }
+                                                ]
+                                            },
+                                            "tagsToRemove": {
+                                                "TagsToRemove": [
+                                                    {
+                                                        "Tag": "Auto Closed"
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['azuresentinel_1']['connectionId']"
+                                            }
+                                        },
+                                        "method": "put",
+                                        "path": "/Incidents"
+                                    },
+                                    "runAfter": {},
+                                    "type": "ApiConnection"
+                                }
+                            },
+                            "foreach": "@variables('Incident Titles')",
+                            "runAfter": {
+                                "Send_to_User_AND_Manager": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Foreach"
+                        }
+                    }
+                },
+                "expression": {
+                    "and": [
+                        {
+                            "not": {
+                                "equals": [
+                                    "@variables('Enhanced Monitoring')",
+                                    "[]"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Enhanced_Monitoring_Group": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "If"
+            },
+            "Initialize_Analyst_Assignment": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Analyst Assignment",
+                            "type": "string",
+                            "value": "@body('Parse_HTTP_Request')?['Assignment']"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_UserID": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Base64_Attachment": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Base64 Attachment",
+                            "type": "string",
+                            "value": "@{base64(body('Create_CSV_Table_for_Email'))}"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Create_CSV_Table_for_Email": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Enhanced_Monitoring_Group": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Enhanced Monitoring",
+                            "type": "string",
+                            "value": "@{body('Get_Enhanced_Monitor_User')?['value']}"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Get_Enhanced_Monitor_User": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Event_IDs_Array": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Event IDs",
+                            "type": "array",
+                            "value": "@split(body('Parse_HTTP_Request')?['EventIds'],',')"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Incident_Names_(Numbers)_Array": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Incident_Names_(Numbers)_Array": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Incident Titles",
+                            "type": "array",
+                            "value": "@split(slice(body('Parse_HTTP_Request')?['IncidentNumbers'],2,-2),'\",\"')"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Parse_HTTP_Request": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Manager_Email": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Manager Email",
+                            "type": "string",
+                            "value": "@{body('Parse_Manager_Response')?['mail']}"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Parse_Manager_Response": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_UserID": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "User ID",
+                            "type": "string",
+                            "value": "@body('Parse_HTTP_Request')?['User']"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Event_IDs_Array": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_Vectors_Array": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "Vector",
+                            "type": "array"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Initialize_Manager_Email": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Looping_results_to_EventHub": {
+                "actions": {
+                    "Send_event": {
+                        "inputs": {
+                            "body": {
+                                "ContentData": "@{base64(items('Looping_results_to_EventHub'))}"
+                            },
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['eventhubs']['connectionId']"
+                                }
+                            },
+                            "method": "post",
+                            "path": "/@{encodeURIComponent('{Event Hub Name}')}/events"
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                    }
+                },
+                "foreach": "@body('Collect_all_events_for_Splunk')?['value']",
+                "runAfter": {
+                    "Collect_all_events_for_Splunk": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Foreach"
+            },
+            "Parse_HTTP_Request": {
+                "inputs": {
+                    "content": "@triggerOutputs()['queries']",
+                    "schema": {
+                        "properties": {
+                            "Assignment": {
+                                "type": "string"
+                            },
+                            "EventIds": {
+                                "type": "string"
+                            },
+                            "IncidentNumbers": {
+                                "type": "string"
+                            },
+                            "User": {
+                                "type": "string"
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "runAfter": {
+                    "Get_Mail_Send_and_Read_for_Email": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson"
+            },
+            "Parse_Manager_Response": {
+                "inputs": {
+                    "content": "@body('HTTP_Get_Manager')",
+                    "schema": {
+                        "properties": {
+                            "@@odata.context": {
+                                "type": "string"
+                            },
+                            "@@odata.type": {
+                                "type": "string"
+                            },
+                            "businessPhones": {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "type": "array"
+                            },
+                            "department": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "employeeId": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "givenName": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "jobTitle": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "mail": {
+                                "items": {
+                                    "type": "string"
+                                }
+                            },
+                            "officeLocation": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "surname": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "runAfter": {
+                    "HTTP_Get_Manager": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson"
+            },
+            "Parse_User_Response": {
+                "inputs": {
+                    "content": "@body('HTTP_Get_User')",
+                    "schema": {
+                        "properties": {
+                            "@@odata.context": {
+                                "type": "string"
+                            },
+                            "businessPhones": {
+                                "type": "array"
+                            },
+                            "companyName": {
+                                "type": "string"
+                            },
+                            "department": {
+                                "type": "string"
+                            },
+                            "employeeId": {
+                                "type": "string"
+                            },
+                            "givenName": {
+                                "type": "string"
+                            },
+                            "id": {
+                                "type": "string"
+                            },
+                            "jobTitle": {
+                                "type": "string"
+                            },
+                            "mail": {
+                                "type": "string"
+                            },
+                            "officeLocation": {
+                                "type": "string"
+                            },
+                            "surname": {
+                                "type": "string"
+                            },
+                            "userPrincipalName": {
+                                "type": "string"
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "runAfter": {
+                    "HTTP_Get_User": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson"
+            },
+            "Parse_Vector": {
+                "inputs": {
+                    "content": "@body('Collect_the_Vector_for_Email')?['value']",
+                    "schema": {
+                        "items": {
+                            "properties": {
+                                "Protocol": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "Protocol"
+                            ],
+                            "type": "object"
+                        },
+                        "type": "array"
+                    }
+                },
+                "runAfter": {
+                    "Collect_the_Vector_for_Email": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ParseJson"
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "inputs": {
+                    "method": "GET"
+                },
+                "kind": "Http",
+                "type": "Request"
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "value": {
+                "azureblob": {
+                    "connectionId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.Web/connections/azureblob",
+                    "connectionName": "azureblob",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    },
+                    "id": "/subscriptions/{Subscription}/providers/Microsoft.Web/locations/{Location}/managedApis/azureblob"
+                },
+                "azuremonitorlogs_1": {
+                    "connectionId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.Web/connections/azuremonitorlogs-2",
+                    "connectionName": "azuremonitorlogs-2",
+                    "id": "/subscriptions/{Subscription}/providers/Microsoft.Web/locations/{Location}/managedApis/azuremonitorlogs"
+                },
+                "azuresentinel_1": {
+                    "connectionId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.Web/connections/azuresentinel-2",
+                    "connectionName": "azuresentinel-2",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    },
+                    "id": "/subscriptions/{Subscription}/providers/Microsoft.Web/locations/{Location}/managedApis/azuresentinel"
+                },
+                "eventhubs": {
+                    "connectionId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.Web/connections/eventhubs",
+                    "connectionName": "eventhubs",
+                    "id": "/subscriptions/{Subscription}/providers/Microsoft.Web/locations/{Location}/managedApis/eventhubs"
+                },
+                "keyvault": {
+                    "connectionId": "/subscriptions/{Subscription}/resourceGroups/{Resource Group}/providers/Microsoft.Web/connections/keyvault-3",
+                    "connectionName": "keyvault-3",
+                    "connectionProperties": {
+                        "authentication": {
+                            "type": "ManagedServiceIdentity"
+                        }
+                    },
+                    "id": "/subscriptions/{Subscription}/providers/Microsoft.Web/locations/{Location}/managedApis/keyvault"
+                }
+            }
+        }
+    }
+}
